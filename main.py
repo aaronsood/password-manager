@@ -1,8 +1,8 @@
 import string
+import sys
 import random
 import bcrypt
 import base64, json, os
-import msvcrt
 import pyperclip
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
@@ -16,23 +16,48 @@ if not os.path.exists("users.json"):
     with open("users.json", "w") as f:
         json.dump({}, f)
 
+
+    if os.name == "nt":
+        import msvcrt
+    else:
+         import tty
+         import termios
+
 def input_masked(prompt=""):
     print(prompt, end="", flush=True)
-    buf =""
-    while True:
-        ch = msvcrt.getch()
-        if ch in {b'\r', b'\n'}:
-            print()
-            break
-        elif ch == b'\x08':
-            if buf:
-                buf = buf[:-1]
-                print ("\b \b", end="", flush=True)
-        elif ch == b'\x03':
-            raise KeyboardInterrupt
-        else:
-            buf += ch.decode()
-            print("*", end="", flush=True)
+    buf ="" 
+    if os.name == "nt":
+        while True:
+            ch = msvcrt.getch()
+            if ch in {b'\r', b'\n'}:
+                print()
+                break
+            elif ch == b'\x08':
+                if buf:
+                    buf = buf[:-1]
+                    print ("\b \b", end="", flush=True)
+            elif ch == b'\x03':
+             raise KeyboardInterrupt
+            else:
+             buf += ch.decode()
+             print("*", end="", flush=True)
+    else:
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            while True:
+                ch = sys.stdin.read(1)
+                if ch in "\r\n":
+                    print()
+                    break
+                elif ch == "\x03":
+                    raise KeyboardInterrupt
+                else:
+                    buf += ch
+                    print("*", end="", flush=True)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     return buf
 
 
