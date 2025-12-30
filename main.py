@@ -1,5 +1,3 @@
-import os
-import json
 import string
 import random
 import bcrypt
@@ -138,12 +136,41 @@ def login():
     print(f"Welcome, {username}.")
     return username, master_password
     
+def password_strength(password: str) -> str:
+    score = 0
+    length = len(password)
+
+    if length >= 8:
+            score += 1
+    if length >= 12:
+            score += 1
+        
+    if any(c.islower() for c in password):
+            score +=1
+    if any(c.isupper() for c in password):
+         score +=1
+    if any(c.isdigit() for c in password):
+            score +=1
+    if any(c in "!@#$%^&*()-_+=<>?" for c in password):
+            score +=1
+
+    if score <= 2:
+            return "Weak"
+    elif score <=4:
+            return "Medium"
+    else:
+            return "Strong"
 
 # password generator 
 def generate_password():
     length = int(input("Password length: "))
     chars = string.ascii_letters + string.digits + "!@#$%^&*()-_+=<>?"
-    return "".join(random.choice(chars) for _ in range(length))
+    pw = "".join(random.choice(chars) for _ in range(length))
+    strength = password_strength(pw)
+    print(f"Generated: {pw}")
+    print(f"Password Strength: {strength}")
+    return pw
+  
 
 
 def add_password(username, fernet):
@@ -155,12 +182,14 @@ def add_password(username, fernet):
     if not pw:
         pw = generate_password()
         print("Generated:", pw)
+    else:
+        strength = password_strength(pw)
+        print(f"Password strength: {strength}")
 
     vault[site] = pw
     save_vault(username, vault, fernet)
-
+    
     print ("Saved.")
-
 
 def get_password(username, fernet):
     vault = load_vault(username, fernet)
