@@ -2,183 +2,220 @@ import os
 import json
 import string
 import random
+import bcrypt
+import base64, json, os
+import msvcrt
+import pyperclip
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.backends import default_backend
+from cryptography.fernet import Fernet
+
+USERS_FILE = "users.json"
 
 # setup
 if not os.path.exists("users.json"):
     with open("users.json", "w") as f:
         json.dump({}, f)
-        print("Created users.json")
 
-# auth
+def input_masked(prompt=""):
+    print(prompt, end="", flush=True)
+    buf =""
+    while True:
+        ch = msvcrt.getch()
+        if ch in {b'\r', b'\n'}:
+            print()
+            break
+        elif ch == b'\x08':
+            if buf:
+                buf = buf[:-1]
+                print ("\b \b", end="", flush=True)
+        elif ch == b'\x03':
+            raise KeyboardInterrupt
+        else:
+            buf += ch.decode()
+            print("*", end="", flush=True)
+    return buf
 
-def signup():
+
+# key derivation
+def derive_key(master_password: str, salt: bytes) -> bytes:
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=200_000,
+        backend=default_backend()
+    )
+    return base64.urlsafe_b64encode(kdf.derive(master_password.encode()))
+
+def load_or_create_salt(username):
+    salt_file = f"{username}_vault.salt"
+    if os.path.exists(salt_file):
+        return open(salt_file, "rb").read()
     
-    username = input("Enter a new username: ")
-    password = input("Enter a master password: ")
+    salt = os.urandom(16)
+    open(salt_file, "wb").write(salt)
+    return salt
 
-    with open("users.json", "r") as f:
-        users = json.load(f)
-
-    if username in users:
-        print("Username already taken. Try another one")
-        return
-    
-    users[username] = password
-
-    with open("users.json", "w") as f:
-        json.dump(users, f)
-    
-    vault_file = f"vault_{username}.json"
-    with open(vault_file, "w") as f:
-        json.dump({}, f)
-
-    print(f"User '{username}' created successfully with empty vault!")
-
-
-def login():
-    username = input("Enter your username: ")
-    password = input("Enter your master password: ")
-    with open("users.json", "r") as f:
-        users = json.load(f)
-    
-    if username in users and users[username] == password:
-        print(f"Login successful! Welcome, {username}")
-        return username
-    else:
-        print("Login failed. Check your login credentials and try again.")
-        return None
-    
-    with open("users.json", "r") as f:
-        users = json.load(f)
-
-        if not users:
-            print("No users found. Please create a new account")
-            signup()
-            with open("users.json", "r") as f:
-                users = json.load(f)
-
-logged_in_user = login()
-if logged_in_user:
-    print("You can now access your passwords vault!")
+def get_fernet(username, master_password):
+    salt = load_or_create_salt(username)
+    key = derive_key(master_password, salt)
+    return Fernet(key)
 
 def get_vault_file(username):
     return f"vault_{username}.json"
 
+
+def load_vault(username, fernet):
+    vault_file = get_vault_file(username)   
+
+    if not os.path.exists(vault_file):
+        return {}
+    
+    with open(vault_file, "r") as f:
+        encrypted = f.read().strip()
+    
+    if not encrypted:
+        return {}
+    
+    decrypted = fernet.decrypt(encrypted.encode()).decode()
+    return json.loads(decrypted)
+
+def save_vault(username, vault, fernet):
+    vault_file = get_vault_file(username)
+    encrypted = fernet.encrypt(json.dumps(vault).encode()).decode()
+
+    with open(vault_file, "w") as f:
+        f.write(encrypted)
+# auth
+
+def signup():
+    
+    username = input("Create username: ")
+    master_password = input_masked("Create master password: ")
+
+    with open(USERS_FILE, "r") as f:
+        users = json.load(f)
+
+    if username in users:
+        print("Username already taken. Try another one")
+        return None
+    
+    hashed = bcrypt.hashpw(master_password.encode(), bcrypt.gensalt()).decode()
+    users[username] = hashed
+
+    with open(USERS_FILE, "w") as f:
+        json.dump(users, f, indent = 2)
+    
+    save_vault(username, {}, get_fernet(username, master_password))
+
+    print(f"User '{username}' created.")
+    return username, master_password
+
+
+def login():
+    with open("users.json", "r") as f:
+        users = json.load(f)
+
+    if not users:
+        print("No users found. Please create an account.")
+        return signup()
+    
+    username = input("Username: ")
+    master_password = input_masked("Master password: ")
+    
+    if username not in users:
+        print("User not found")
+        return None
+    
+    stored_hash = users[username].encode("utf-8")
+
+    if not bcrypt.checkpw(master_password.encode(), stored_hash):
+        print("Incorrect password.")
+        return None
+    
+    print(f"Welcome, {username}.")
+    return username, master_password
+    
+
 # password generator 
 def generate_password():
     length = int(input("Password length: "))
+    chars = string.ascii_letters + string.digits + "!@#$%^&*()-_+=<>?"
+    return "".join(random.choice(chars) for _ in range(length))
 
-    use_numbers = input("Include numbers? (y/n): ").lower() == "y"
-    use_symbols = input("Include symbols? (y/n): ").lower() == "y"
 
-    letters = list(string.ascii_letters)
-    numbers = list(string.digits)
-    symbols = ("!@#$%^&*()-_+=<>?")
+def add_password(username, fernet):
+    vault =load_vault(username, fernet)
 
-    pool = letters[:]
-    if use_numbers:
-        pool += numbers
-    if use_symbols:
-        pool += symbols
-    
-    if not pool:
-        print("You must at least allow letters")
-        return None
-    
-    password_chars = []
+    site = input("Site: ").lower()
+    pw = input("Enter password (leave blank to auto-generate): ") 
 
-    password_chars.append(random.choice(letters))
-    if use_numbers:
-        password_chars.append(random.choice(letters))
-    if use_symbols:
-        password_chars.append(random.choice(symbols))
-    
-    while len(password_chars) < length:
-        password_chars.append(random.choice(pool))
-    
-    random.shuffle(password_chars)
-    password = "".join(password_chars)
+    if not pw:
+        pw = generate_password()
+        print("Generated:", pw)
 
-    print(f"\nGenerated password: {password}\n")
-    return password 
-    
-def add_password(username):
-    site = input("Enter site name: ")
-    password = input("Enter password: ")
+    vault[site] = pw
+    save_vault(username, vault, fernet)
 
-    vault_file = get_vault_file(username)
-    with open(vault_file, "r") as f:
-        vault = json.load(f)
+    print ("Saved.")
 
-    vault[site] = password  
 
-    with open(vault_file, "w") as f:
-        json.dump(vault, f)
-
-    print(f"Password for '{site}' added successfully!")
-
-def get_password(username):
-    site = input("Enter site name to retrieve: ")
-    
-    vault_file = get_vault_file(username)
-    with open(vault_file, "r") as f:
-        vault = json.load(f)
+def get_password(username, fernet):
+    vault = load_vault(username, fernet)
+    site = input("Site: ").lower()
 
     if site in vault:
-        print(f"Password for '{site}': {vault[site]}")
+        pw = vault[site]    
+        print("Password:", pw)
+        pyperclip.copy(pw)
+        print("(Copied to clipboard)")
     else:
-        print(f"No password found for '{site}'.")
+        print("No entry found.")
 
-def list_passwords(username):
-    vault_file = get_vault_file(username)
-    with open(vault_file, "r") as f:
-        vault = json.load(f)
+def list_passwords(username, fernet):
+    vault = load_vault(username, fernet)
 
-    if vault:
-        print("Your saved passwords:")
-        for site, pw in vault.items():
-            print(f"{site}: {pw}")
-    else:
+    if not vault:
         print("Vault is empty.")
+        return
+    for site in vault:
+        print("-", site)
 
-def delete_password(username):
-    site = input("Enter site name to delete: ")
-
-    vault_file = get_vault_file(username)
-    with open(vault_file, "r") as f:
-        vault = json.load(f)
+def delete_password(username, fernet):
+    vault = load_vault(username, fernet)
+    site = input("Site to delete: ")
 
     if site in vault:
         del vault[site]
-        with open(vault_file, "w") as f:
-            json.dump(vault, f)
-        print(f"Password for '{site}' deleted successfully!")
+        save_vault(username, vault, fernet)
+        print("Deleted.")
     else:
-        print(f"No password found for '{site}'.")
+        print("Not found.")
 
-if logged_in_user:
-    while True:
-        print("\nVault Menu:")
-        print("1. Add password")
-        print("2. Get password")
-        print("3. List passwords")
-        print("4. Delete password")
-        print("5. Generate password")
-        print("6. Exit")
+# main
+auth = login()
+if not auth:
+    quit()
+username, master_password = auth 
+fernet = get_fernet(username, master_password)
 
-        choice = input("Choose an option: ")
-        if choice == "1":
-            add_password(logged_in_user)
-        elif choice == "2":
-            get_password(logged_in_user)
-        elif choice == "3":
-            list_passwords(logged_in_user)
-        elif choice == "4":
-            delete_password(logged_in_user)
-        elif choice == "5":
-            generate_password()
-        elif choice == "6":
-            print("Exiting...")
-            break
-        else:
-            print("Invalid choice. Try again.")
+while True:
+        print("""
+1. Add password
+2. Get password
+3. List passwords
+4. Delete password
+5. Generate password
+6. Exit
+        """)
+        c = input("> ")
+
+        if c == "1": add_password(username, fernet)
+        elif c == "2": get_password(username, fernet)
+        elif c == "3": list_passwords(username, fernet)
+        elif c == "4": delete_password(username, fernet)
+        elif c == "5": print(generate_password())
+        elif c == "6": break
+        else: print("Invalid choice.")
