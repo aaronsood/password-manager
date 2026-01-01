@@ -4,6 +4,8 @@ import random
 import bcrypt
 import base64, json, os
 import pyperclip
+import time
+import threading
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
@@ -17,11 +19,11 @@ if not os.path.exists("users.json"):
         json.dump({}, f)
 
 
-    if os.name == "nt":
-        import msvcrt
-    else:
-         import tty
-         import termios
+if os.name == "nt":
+    import msvcrt
+else:
+    import tty
+    import termios
 
 def input_masked(prompt=""):
     print(prompt, end="", flush=True)
@@ -60,6 +62,23 @@ def input_masked(prompt=""):
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     return buf
 
+
+last_activity = time.time()
+lock_timeout = 300
+vault_locked = False
+
+def reset_activity():
+     global last_activity
+     last_activity = time.time()
+    
+def auto_lock_monitor():
+     global vault_locked
+     while True:
+          time.sleep(1)
+          if not vault_locked and time.time() - last_activity > lock_timeout:
+               vault_locked = True
+               print("\nVault auto-locked due to inactivity.")
+threading.Thread(target=auto_lock_monitor, daemon=True).start()
 
 # key derivation
 def derive_key(master_password: str, salt: bytes) -> bytes:
@@ -248,14 +267,22 @@ def delete_password(username, fernet):
     else:
         print("Not found.")
 
-# main
-auth = login()
-if not auth:
-    quit()
-username, master_password = auth 
-fernet = get_fernet(username, master_password)
 
-while True:
+
+
+def main():
+    global vault_locked 
+
+    auth = login()
+    if not auth:
+        return
+    username, master_password = auth
+    fernet = get_fernet(username, master_password)
+    vault_locked = False
+
+
+    while True:
+        reset_activity()
         print("""
 1. Add password
 2. Get password
@@ -265,11 +292,32 @@ while True:
 6. Exit
         """)
         c = input("> ")
+        reset_activity()
 
-        if c == "1": add_password(username, fernet)
-        elif c == "2": get_password(username, fernet)
-        elif c == "3": list_passwords(username, fernet)
-        elif c == "4": delete_password(username, fernet)
-        elif c == "5": print(generate_password())
-        elif c == "6": break
-        else: print("Invalid choice.")
+        if vault_locked:
+            print("Vault is locked. Please re-enter your master password.")
+            auth = login()
+            if not auth:
+                continue
+            username, master_password = auth
+            fernet = get_fernet(username, master_password)
+            vault_locked = False
+            continue
+
+        if c == "1":
+            add_password(username, fernet)
+        elif c == "2":
+            get_password(username, fernet)
+        elif c == "3":
+            list_passwords(username, fernet)
+        elif c == "4":
+            delete_password(username, fernet)
+        elif c == "5":
+            print(generate_password())
+        elif c == "6":
+            break
+        else:
+            print("Invalid choice.")
+
+if __name__ == "__main__":
+    main()
